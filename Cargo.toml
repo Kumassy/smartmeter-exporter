@@ -1,0 +1,14 @@
+[package]
+name = "smartmeter-exporter"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+prometheus_exporter = "0.8"
+env_logger = "0.10"
+log = { version = "0.4" }
+pretty_env_logger = "0.4"
+rppal = "0.14.1"
+bytes = "1.4"

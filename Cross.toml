@@ -1,0 +1,8 @@
+[target.armv7-unknown-linux-gnueabihf]
+pre-build = ["apt-get update && apt-get install --assume-yes libudev-dev"]
+
+[build.env]
+passthrough = [
+    "B_ID",
+    "B_PW",
+]
