@@ -1,11 +1,12 @@
 use bytes::{BytesMut, BufMut, Bytes, Buf};
-use log::{info, debug};
+use log::{info, debug, error};
 use std::collections::HashMap;
 use std::io::{self, BufReader, BufRead};
 use std::sync::{Arc, Mutex};
 use std::{net::SocketAddr, io::Read, io::Write};
 use std::error::Error;
 use std::time::Duration;
+use std::sync::mpsc::{channel, Receiver};
 
 use env_logger::{
     Builder,
@@ -13,6 +14,11 @@ use env_logger::{
 };
 use prometheus_exporter::prometheus::register_gauge;
 use rppal::uart::{Parity, Uart, Queue};
+
+mod parser;
+use parser::{parser, PanDesc};
+
+use crate::parser::Response;
 
 
 #[derive(Debug, Clone)]
@@ -38,6 +44,7 @@ impl Read for MyUart {
 
 impl Write for MyUart {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        debug!("write: {:?}", buf);
         self.inner.lock().expect("failed to acuire lock").write(buf).map_err(|e| 
             io::Error::new(io::ErrorKind::Other, e)
         )
@@ -106,79 +113,82 @@ fn assert_start_with_or_error(got: impl Into<Bytes>, start_with: impl Into<Bytes
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
-struct PanDesc {
-    channel: String,
-    channel_page: String, 
-    pan_id: String,
-    addr: String,
-    lqi: String,
-    pair_id: String,
-}
+// #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+// struct PanDesc {
+//     channel: String,
+//     channel_page: String, 
+//     pan_id: String,
+//     addr: String,
+//     lqi: String,
+//     pair_id: String,
+// }
 
-fn parse_pan_desc(sensor: &mut Sensor) -> Result<PanDesc, Box<dyn Error>> {
-    let mut map = HashMap::new();
-    for _ in 0..6 {
-        let line = sensor.read_line()?.strip_prefix(b"  ").ok_or("parse error")?.to_vec();
+// fn parse_pan_desc(sensor: &mut Sensor) -> Result<PanDesc, Box<dyn Error>> {
+//     let mut map = HashMap::new();
+//     for _ in 0..6 {
+//         let line = sensor.read_line()?.strip_prefix(b"  ").ok_or("parse error")?.to_vec();
 
-        let mut parts = line.split(|c| *c == b':');
+//         let mut parts = line.split(|c| *c == b':');
 
-        let key = String::from_utf8(parts.next().ok_or("parse error")?.to_vec())?;
-        let value = String::from_utf8(parts.next().ok_or("parse error")?.to_vec())?;
-        map.insert(key, value);
-    }
-    info!("map: {:?}", map);
+//         let key = String::from_utf8(parts.next().ok_or("parse error")?.to_vec())?;
+//         let value = String::from_utf8(parts.next().ok_or("parse error")?.to_vec())?;
+//         map.insert(key, value);
+//     }
+//     info!("map: {:?}", map);
 
-    Ok(PanDesc {
-        channel: map.get("Channel").ok_or("parse error")?.to_string(),
-        channel_page: map.get("Channel Page").ok_or("parse error")?.to_string(),
-        pan_id: map.get("Pan ID").ok_or("parse error")?.to_string(),
-        addr: map.get("Addr").ok_or("parse error")?.to_string(),
-        lqi: map.get("LQI").ok_or("parse error")?.to_string(),
-        pair_id: map.get("PairID").ok_or("parse error")?.to_string(),
-    })
-}
+//     Ok(PanDesc {
+//         channel: map.get("Channel").ok_or("parse error")?.to_string(),
+//         channel_page: map.get("Channel Page").ok_or("parse error")?.to_string(),
+//         pan_id: map.get("Pan ID").ok_or("parse error")?.to_string(),
+//         addr: map.get("Addr").ok_or("parse error")?.to_string(),
+//         lqi: map.get("LQI").ok_or("parse error")?.to_string(),
+//         pair_id: map.get("PairID").ok_or("parse error")?.to_string(),
+//     })
+// }
 
-fn active_scan(sensor: &mut Sensor) -> Result<PanDesc, Box<dyn Error>> {
+fn active_scan(sensor: &mut MyUart, receiver: &mut Receiver<Response>) -> Result<PanDesc, Box<dyn Error>> {
     // active scan
-    sensor.write_all(BytesMut::from("SKSCAN 2 FFFFFFFF 6"))?;
-    expect_or_err(sensor.read_line()?, "SKSCAN 2 FFFFFFFF 6")?;
-    expect_or_err(sensor.read_line()?, "OK")?;
+    sensor.write_all("SKSCAN 2 FFFFFFFF 6\r\n".as_bytes())?;
+    let r = receiver.recv()?;
+    if ! matches!(r, Response::SkScan { ..}) {
+        return Err("SKSCAN failed".into());
+    }
 
-
-    // wait and parse scan result
-    let total_wait_time = Duration::from_millis(0);
     let mut tmp = Err("unable to scan".into());
-    let pan_desc = loop {
-        if total_wait_time > Duration::from_secs(30) {
-            return Err("scan timeout".into());
+    loop {
+        let r = receiver.recv()?;
+        match r {
+            Response::Event { num, sender, param } => {
+                if num == 0x22 {
+                    return tmp;
+                }
+            }
+            Response::EPanDesc(pandesc) => {
+                tmp = Ok(pandesc);
+            },
+            _ => {
+            }
         }
-
-        let line = sensor.read_line()?;
-        if line.starts_with(b"EVENT 20") {
-            expect_or_err(sensor.read_line()?, "EPANDESC")?;
-
-            tmp = parse_pan_desc(sensor)
-        } else if line.starts_with(b"EVENT 22") {
-            break tmp;
-        }
-    };
-    
-    pan_desc
+    }
 }
 
-fn wait_for_connect(sensor: &mut Sensor) -> Result<(), Box<dyn Error>> {
+fn wait_for_connect(sensor: &mut MyUart, receiver: &mut Receiver<Response>) -> Result<(), Box<dyn Error>> {
     let total_wait_time = Duration::from_millis(0);
     loop {
         if total_wait_time > Duration::from_secs(30) {
             return Err("connect timeout".into());
         }
 
-        let line = sensor.read_line()?;
-        if line.starts_with(b"EVENT 24") {
-            return Err("failed to connect to PANA".into());
-        } else if line.starts_with(b"EVENT 25") {
-            return Ok(());
+        let r = receiver.recv()?;
+        match r {
+            Response::Event { num: 0x24, .. } => {
+                return Err("failed to connect to PANA".into());
+            },
+            Response::Event { num: 0x25, .. } => {
+                return Ok(());
+            }
+            _ => {
+            }
         }
     }
 }
@@ -216,74 +226,134 @@ fn main() -> Result<(), Box<dyn Error>> {
     uart.set_read_mode(0, Duration::from_millis(2000))?;
     uart.set_write_mode(true)?;
 
-    let mut sensor = Sensor::new(uart);
+    let (sender, mut receiver) = channel();
 
+    let mut uart = MyUart::new(uart);
+    let mut uart_ = uart.clone();
+    std::thread::spawn(move || {
+        let mut buf = BytesMut::with_capacity(64);
+        loop {
+            let mut b = [0; 1024];
 
-    // sensor.write_all(BytesMut::from("SKVER"))?;
-    // let line = sensor.read_line()?;
-    // println!("line: {:?}", line);
-    // let line = sensor.read_line()?;
-    // println!("line: {:?}", line);
+            match uart_.read(&mut b) {
+                Ok(n) if n > 0 => {
+                    debug!("read: {:?}", &b[..n]);
+                    buf.put(&b[..n]);
+                },
+                Err(e) => {
+                    error!("uart read error: {:?}", e);
+                }
+                _ => {}
+            }
+
+            debug!("current buf: {:?}", buf);
+            match parser(&buf) {
+                Ok((rest, line)) => {
+                    debug!("parsed response: {:?}", line);
+                    sender.send(line).unwrap();
+
+                    buf = BytesMut::from(rest);
+                },
+                Err(nom::Err::Incomplete(n)) => {
+                    // not enough data
+                    debug!("parse incomplate: {:?}", n);
+                },
+                Err(e) => {
+                    error!("parse error: {:?}", e);
+                }
+            }
+        }
+    });
 
     // reset
-    sensor.write_all("SKRESET")?;
-    expect_or_err(sensor.read_line()?, "SKRESET")?;
-    expect_or_err(sensor.read_line()?, "OK")?;
+    uart.write_all("SKRESET\r\n".as_bytes())?;
+    let r = receiver.recv()?;
+    if ! matches!(r, Response::SkReset) {
+        error!("SKRESET failed");
+    }
 
     // send id
-    let command = format!("SKSETRBID {}", B_ID);
-    sensor.write_all(command.as_bytes())?;
-    expect_or_err(sensor.read_line()?, command)?;
-    expect_or_err(sensor.read_line()?, "OK")?;
+    let command = format!("SKSETRBID {}\r\n", B_ID);
+    uart.write_all(command.as_bytes())?;
+    let r = receiver.recv()?;
+
+    if ! matches!(r, Response::SkSetRbid { ..}) {
+        error!("SKSETRBID failed");
+    }
 
     // send pw
-    let command = format!("SKSETPWD C {}", B_PW);
-    sensor.write_all(command.as_bytes())?;
-    expect_or_err(sensor.read_line()?, command)?;
-    expect_or_err(sensor.read_line()?, "OK")?;
+    let command = format!("SKSETPWD C {}\r\n", B_PW);
+    uart.write_all(command.as_bytes())?;
+    let r = receiver.recv()?;
+    if ! matches!(r, Response::SkSetPwd { ..} ) {
+        error!("SKSETPWD failed");
+    }
 
-
-    let pan_desc = active_scan(&mut sensor)?;
+    let pan_desc = active_scan(&mut uart, &mut receiver)?;
     println!("pan_desc: {:?}", pan_desc);
 
     // set channel
-    let command = format!("SKSREG S2 {}", pan_desc.channel);
-    sensor.write_all(command.as_bytes())?;
-    expect_or_err(sensor.read_line()?, command)?;
-    expect_or_err(sensor.read_line()?, "OK")?; 
+    let command = format!("SKSREG S2 {:02x}\r\n", pan_desc.channel);
+    uart.write_all(command.as_bytes())?;
+    let r = receiver.recv()?;
+    if ! matches!(r, Response::SkSreg { ..} ) {
+        error!("SKSREG failed");
+    }
 
     // set pan id
-    let command = format!("SKSREG S3 {}", pan_desc.pan_id);
-    sensor.write_all(command.as_bytes())?;
-    expect_or_err(sensor.read_line()?, command)?;
-    expect_or_err(sensor.read_line()?, "OK")?;
+    let command = format!("SKSREG S3 {:02x}\r\n", pan_desc.pan_id);
+    uart.write_all(command.as_bytes())?;
+    let r = receiver.recv()?;
+    if ! matches!(r, Response::SkSreg { ..} ) {
+        error!("SKSREG failed");
+    }
 
     // convert addr
-    let command = format!("SKLL64 {}", pan_desc.addr);
-    sensor.write_all(command.as_bytes())?;
-    expect_or_err(sensor.read_line()?, command)?;
-    let ipv6_addr = String::from_utf8(sensor.read_line()?.to_vec())?;
+    let command = format!("SKLL64 {}\r\n", pan_desc.addr);
+    uart.write_all(command.as_bytes())?;
+    let r = receiver.recv()?;
+    let ipv6_addr = match r {
+        Response::SkLl64 { ipaddr, .. } => ipaddr,
+        _ => {
+            error!("SKLL64 failed");
+            return Err("SKLL64 failed".into());
+        }
+    };
 
     // connect to pana
-    let command = format!("SKJOIN {}", ipv6_addr);
-    sensor.write_all(command.as_bytes())?;
-    expect_or_err(sensor.read_line()?, command)?;
-    expect_or_err(sensor.read_line()?, "OK")?;
+    let command = format!("SKJOIN {}\r\n", ipv6_addr);
+    uart.write_all(command.as_bytes())?;
+    let r = receiver.recv()?;
+    if ! matches!(r, Response::SkJoin { ..} ) {
+        error!("SKJOIN failed");
+    }
 
-    wait_for_connect(&mut sensor)?;
+    wait_for_connect(&mut uart, &mut receiver)?;
     info!("connected to PANA");
 
-    let get_now_p = Bytes::from(&b"\x10\x81\x00\x01\x05\xFF\x01\x02\x88\x01\x62\x01\xE7\x00"[..]);
-    let command = format!("SKSENDTO 1 {} 0E1A 1 {:>04x} ", ipv6_addr, get_now_p.len());
-    let mut cmd = BytesMut::from(command.as_bytes());
-    cmd.put(get_now_p);
-    sensor.write_all(cmd)?;
-    expect_or_err(sensor.read_line()?, command)?;
-    expect_or_err(sensor.read_line()?, "OK")?;
-
     loop {
-        let line = sensor.read_line()?;
-        println!("line: {:?}", line);
+        // send
+        let get_now_p = Bytes::from(&b"\x10\x81\x00\x01\x05\xFF\x01\x02\x88\x01\x62\x01\xE7\x00"[..]);
+        let command = format!("SKSENDTO 1 {} 0E1A 1 {:>04x} ", ipv6_addr, get_now_p.len());
+        let mut cmd = BytesMut::from(command.as_bytes());
+        cmd.put(get_now_p);
+        cmd.put(&b"\r\n"[..]);
+        uart.write_all(&cmd)?;
+
+
+        loop {
+            let r = receiver.recv()?;
+            info!("{:?}", r);
+
+            match r {
+                Response::SkSendTo{ result: 0x00, .. } => {
+                    break;
+                },
+                _ => {
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_secs(15));
     }
 
     // loop {
