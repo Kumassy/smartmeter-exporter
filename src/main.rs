@@ -1,6 +1,5 @@
 use bytes::{BytesMut, BufMut, Bytes, Buf};
 use log::{info, debug, error};
-use std::collections::HashMap;
 use std::io::{self, BufReader, BufRead};
 use std::sync::{Arc, Mutex};
 use std::{net::SocketAddr, io::Read, io::Write};
@@ -17,6 +16,8 @@ use rppal::uart::{Parity, Uart, Queue};
 
 mod parser;
 use parser::{parser, PanDesc};
+mod command;
+use command::Command;
 
 use crate::parser::Response;
 
@@ -31,6 +32,12 @@ impl MyUart {
         Self {
             inner: Arc::new(Mutex::new(uart))
         }
+    }
+
+    fn send_command(&mut self, cmd: Command) -> Result<(), Box<dyn Error>> {
+        let cmd: Bytes = cmd.into();
+        self.write_all(&cmd)?;
+        Ok(())
     }
 }
 
@@ -148,7 +155,7 @@ fn assert_start_with_or_error(got: impl Into<Bytes>, start_with: impl Into<Bytes
 
 fn active_scan(sensor: &mut MyUart, receiver: &mut Receiver<Response>) -> Result<PanDesc, Box<dyn Error>> {
     // active scan
-    sensor.write_all("SKSCAN 2 FFFFFFFF 6\r\n".as_bytes())?;
+    sensor.send_command(Command::ActiveScan { duration: 6 })?;
     let r = receiver.recv()?;
     if ! matches!(r, Response::SkScan { ..}) {
         return Err("SKSCAN failed".into());
@@ -266,15 +273,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     });
 
     // reset
-    uart.write_all("SKRESET\r\n".as_bytes())?;
+    uart.send_command(Command::SkReset)?;
     let r = receiver.recv()?;
     if ! matches!(r, Response::SkReset) {
         error!("SKRESET failed");
     }
 
     // send id
-    let command = format!("SKSETRBID {}\r\n", B_ID);
-    uart.write_all(command.as_bytes())?;
+    uart.send_command(Command::SkSetRbid { id: B_ID })?;
     let r = receiver.recv()?;
 
     if ! matches!(r, Response::SkSetRbid { ..}) {
@@ -282,8 +288,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // send pw
-    let command = format!("SKSETPWD C {}\r\n", B_PW);
-    uart.write_all(command.as_bytes())?;
+    uart.send_command(Command::SkSetPwd { pwd: B_PW })?;
     let r = receiver.recv()?;
     if ! matches!(r, Response::SkSetPwd { ..} ) {
         error!("SKSETPWD failed");
@@ -293,24 +298,21 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("pan_desc: {:?}", pan_desc);
 
     // set channel
-    let command = format!("SKSREG S2 {:02x}\r\n", pan_desc.channel);
-    uart.write_all(command.as_bytes())?;
+    uart.send_command(Command::SkSreg { sreg: 0x02, val: pan_desc.channel as u32 })?;
     let r = receiver.recv()?;
     if ! matches!(r, Response::SkSreg { ..} ) {
         error!("SKSREG failed");
     }
 
     // set pan id
-    let command = format!("SKSREG S3 {:02x}\r\n", pan_desc.pan_id);
-    uart.write_all(command.as_bytes())?;
+    uart.send_command(Command::SkSreg { sreg: 0x03, val: pan_desc.pan_id as u32 })?;
     let r = receiver.recv()?;
     if ! matches!(r, Response::SkSreg { ..} ) {
         error!("SKSREG failed");
     }
 
     // convert addr
-    let command = format!("SKLL64 {}\r\n", pan_desc.addr);
-    uart.write_all(command.as_bytes())?;
+    uart.send_command(Command::SkLl64 { addr64: &pan_desc.addr })?;
     let r = receiver.recv()?;
     let ipv6_addr = match r {
         Response::SkLl64 { ipaddr, .. } => ipaddr,
@@ -321,8 +323,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
 
     // connect to pana
-    let command = format!("SKJOIN {}\r\n", ipv6_addr);
-    uart.write_all(command.as_bytes())?;
+    uart.send_command(Command::SkJoin { ipaddr: &ipv6_addr })?;
     let r = receiver.recv()?;
     if ! matches!(r, Response::SkJoin { ..} ) {
         error!("SKJOIN failed");
@@ -333,13 +334,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     loop {
         // send
-        let get_now_p = Bytes::from(&b"\x10\x81\x00\x01\x05\xFF\x01\x02\x88\x01\x62\x01\xE7\x00"[..]);
-        let command = format!("SKSENDTO 1 {} 0E1A 1 {:>04x} ", ipv6_addr, get_now_p.len());
-        let mut cmd = BytesMut::from(command.as_bytes());
-        cmd.put(get_now_p);
-        cmd.put(&b"\r\n"[..]);
-        uart.write_all(&cmd)?;
-
+        uart.send_command(Command::SendEnergyRequest { ipaddr: &ipv6_addr })?;
 
         loop {
             let r = receiver.recv()?;
