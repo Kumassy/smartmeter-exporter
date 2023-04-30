@@ -64,97 +64,7 @@ impl Write for MyUart {
     }
 }
 
-struct Sensor {
-    writer: MyUart,
-    reader: BufReader<MyUart>
-}
-
-impl Sensor {
-    fn new(uart: Uart) -> Self {
-        let myuart = MyUart::new(uart);
-        let reader = BufReader::new(myuart.clone()); 
-        Self {
-            writer: myuart,
-            reader
-        }
-    }
-
-    fn read_line(&mut self) -> Result<BytesMut, Box<dyn Error>> {
-        let mut line = Vec::new();
-        self.reader.read_until(b'\n',&mut line)?;
-        let line = Bytes::from(line);
-        debug!("read {:?}", line);
-
-        let line = line.strip_suffix(b"\r\n").unwrap_or(&line);
-        let line = BytesMut::from(line);
-        Ok(line)
-    }
-
-    fn write_all(&mut self, mut buf: impl Into<BytesMut>) -> Result<(), Box<dyn Error>> {
-        let mut buf = buf.into();
-        buf.put(&b"\r\n"[..]);
-        debug!("write {:?}", &buf);
-        self.writer.write_all(&buf)?;
-        Ok(())
-    }
-
-}
-
-fn expect_or_err(got: impl Into<Bytes>, expected: impl Into<Bytes>) -> Result<(), Box<dyn Error>> {
-    let got = got.into();
-    let expected = expected.into();
-    if got == expected {
-        Ok(())
-    } else {
-        Err(format!("expected {}, got {}", String::from_utf8_lossy(&expected), String::from_utf8_lossy(&got)).into())
-    }
-}
-
-fn assert_start_with_or_error(got: impl Into<Bytes>, start_with: impl Into<Bytes>) -> Result<(), Box<dyn Error>> {
-    let got = got.into();
-    let start_with = start_with.into();
-    if got.starts_with(&start_with) {
-        Ok(())
-    } else {
-        Err(format!("expected start with {}, got {}", String::from_utf8_lossy(&start_with), String::from_utf8_lossy(&got)).into())
-    }
-}
-
-// #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
-// struct PanDesc {
-//     channel: String,
-//     channel_page: String, 
-//     pan_id: String,
-//     addr: String,
-//     lqi: String,
-//     pair_id: String,
-// }
-
-// fn parse_pan_desc(sensor: &mut Sensor) -> Result<PanDesc, Box<dyn Error>> {
-//     let mut map = HashMap::new();
-//     for _ in 0..6 {
-//         let line = sensor.read_line()?.strip_prefix(b"  ").ok_or("parse error")?.to_vec();
-
-//         let mut parts = line.split(|c| *c == b':');
-
-//         let key = String::from_utf8(parts.next().ok_or("parse error")?.to_vec())?;
-//         let value = String::from_utf8(parts.next().ok_or("parse error")?.to_vec())?;
-//         map.insert(key, value);
-//     }
-//     info!("map: {:?}", map);
-
-//     Ok(PanDesc {
-//         channel: map.get("Channel").ok_or("parse error")?.to_string(),
-//         channel_page: map.get("Channel Page").ok_or("parse error")?.to_string(),
-//         pan_id: map.get("Pan ID").ok_or("parse error")?.to_string(),
-//         addr: map.get("Addr").ok_or("parse error")?.to_string(),
-//         lqi: map.get("LQI").ok_or("parse error")?.to_string(),
-//         pair_id: map.get("PairID").ok_or("parse error")?.to_string(),
-//     })
-// }
-
 fn active_scan(sensor: &mut MyUart, receiver: &mut Receiver<Response>) -> Result<PanDesc, Box<dyn Error>> {
-    // active scan
     sensor.send_command(Command::ActiveScan { duration: 6 })?;
     let r = receiver.recv()?;
     if ! matches!(r, Response::SkScan { ..}) {
@@ -205,28 +115,18 @@ const B_PW: &str = std::env!("B_PW");
 
 
 fn main() -> Result<(), Box<dyn Error>> {
-    // pretty_env_logger::init();
-
-    // Setup logger with default level info so we can see the messages from
-    // prometheus_exporter.
     Builder::from_env(Env::default().default_filter_or("debug")).init();
 
-    // Parse address used to bind exporter to.
     let addr_raw = "0.0.0.0:9186";
     let addr: SocketAddr = addr_raw.parse().expect("can not parse listen addr");
 
-    // Start exporter and update metrics every five seconds.
     let exporter = prometheus_exporter::start(addr).expect("can not start exporter");
-    let duration = std::time::Duration::from_millis(1000);
+    let duration = std::time::Duration::from_millis(10000);
 
-    // Create metric
     let my_metrics = register_gauge!("my_metrics", "my metrics")
         .expect("can not create gauge my_metrics");
 
 
-
-    // Connect to the primary UART and configure it for 115.2 kbit/s, no
-    // parity bit, 8 data bits and 1 stop bit.
     let mut uart = Uart::with_path("/dev/ttyAMA0", 115200, Parity::None, 8, 1)?;
 
     // Configure read() to block until at least 1 byte is received or timeout elapsed
