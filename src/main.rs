@@ -114,7 +114,58 @@ const B_ID: &str = std::env!("B_ID");
 const B_PW: &str = std::env!("B_PW");
 
 
-fn initialize(uart: &mut MyUart, receiver: &mut Receiver<Response>) -> Result<IpAddr, Box<dyn Error>>  {
+fn initialize() -> Result<(MyUart, Receiver<Response>, IpAddr), Box<dyn Error>>  {
+    let mut uart = Uart::with_path("/dev/ttyAMA0", 115200, Parity::None, 8, 1)?;
+
+    // Configure read() to block until at least 1 byte is received or timeout elapsed
+    uart.set_read_mode(0, Duration::from_millis(2000))?;
+    uart.set_write_mode(true)?;
+
+    let (sender, mut receiver) = channel();
+
+    let mut uart = MyUart::new(uart);
+    let mut uart_ = uart.clone();
+    std::thread::spawn(move || {
+        let mut buf = BytesMut::with_capacity(1024);
+        loop {
+            let mut b = [0; 1024];
+
+            match uart_.read(&mut b) {
+                Ok(n) if n > 0 => {
+                    debug!("read: {:?}", &b[..n]);
+                    buf.put(&b[..n]);
+                },
+                Err(e) => {
+                    error!("uart read error: {:?}", e);
+                    break;
+                }
+                _ => {}
+            }
+
+            debug!("current buf: {:?}", buf);
+            match parser(&buf) {
+                Ok((rest, line)) => {
+                    debug!("parsed response: {:?}", line);
+                    sender.send(line).unwrap();
+
+                    buf = BytesMut::from(rest);
+                },
+                Err(nom::Err::Incomplete(n)) => {
+                    // not enough data
+                    debug!("parse incomplate: {:?}", n);
+                },
+                Err(e) => {
+                    error!("parse error: {:?}", e);
+
+                    // finish reading from device
+                    break;
+                }
+            }
+        }
+        // explicitly drop sender, so receiver.recv() will return Err
+        drop(sender);
+    });
+
     // reset
     uart.send_command(Command::SkReset)?;
     let r = receiver.recv()?;
@@ -137,7 +188,7 @@ fn initialize(uart: &mut MyUart, receiver: &mut Receiver<Response>) -> Result<Ip
         return Err("SKSETPWD failed".into());
     }
 
-    let pan_desc = active_scan(uart, receiver)?;
+    let pan_desc = active_scan(&mut uart, &mut receiver)?;
     debug!("pan_desc: {:?}", pan_desc);
 
     // set channel
@@ -171,9 +222,9 @@ fn initialize(uart: &mut MyUart, receiver: &mut Receiver<Response>) -> Result<Ip
         return Err("SKJOIN failed".into());
     }
 
-    wait_for_connect(uart, receiver)?;
+    wait_for_connect(&mut uart, &mut receiver)?;
     info!("connected to PANA");
-    Ok(ipv6_addr)
+    Ok((uart, receiver, ipv6_addr))
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -196,56 +247,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let instantaneous_energy = register_gauge!("instantaneous_energy", "Current Power Consumption in Watt")
         .expect("can not create gauge instantaneous_energy");
 
-
-    let mut uart = Uart::with_path("/dev/ttyAMA0", 115200, Parity::None, 8, 1)?;
-
-    // Configure read() to block until at least 1 byte is received or timeout elapsed
-    uart.set_read_mode(0, Duration::from_millis(2000))?;
-    uart.set_write_mode(true)?;
-
-    let (sender, mut receiver) = channel();
-
-    let mut uart = MyUart::new(uart);
-    let mut uart_ = uart.clone();
-    std::thread::spawn(move || {
-        let mut buf = BytesMut::with_capacity(64);
-        loop {
-            let mut b = [0; 1024];
-
-            match uart_.read(&mut b) {
-                Ok(n) if n > 0 => {
-                    debug!("read: {:?}", &b[..n]);
-                    buf.put(&b[..n]);
-                },
-                Err(e) => {
-                    error!("uart read error: {:?}", e);
-                    break;
-                }
-                _ => {}
-            }
-
-            debug!("current buf: {:?}", buf);
-            match parser(&buf) {
-                Ok((rest, line)) => {
-                    debug!("parsed response: {:?}", line);
-                    sender.send(line).unwrap();
-
-                    buf = BytesMut::from(rest);
-                },
-                Err(nom::Err::Incomplete(n)) => {
-                    // not enough data
-                    debug!("parse incomplate: {:?}", n);
-                },
-                Err(e) => {
-                    error!("parse error: {:?}", e);
-                    // TODO redo reset
-                }
-            }
-        }
-    });
-
     loop {
-        let ipv6_addr = match initialize(&mut uart, &mut receiver) {
+        let (mut uart, mut receiver, ipv6_addr) = match initialize() {
             Ok(ipv6_addr) => ipv6_addr,
             Err(e) => {
                 error!("unable to initialize smartmeter: {:?}", e);
@@ -259,13 +262,23 @@ fn main() -> Result<(), Box<dyn Error>> {
         // main loop
         'main: loop {
             let _guard = exporter.wait_duration(duration);
-            uart.send_command(Command::SendEnergyRequest { ipaddr: &ipv6_addr })?;
+            if let Err(e) = uart.send_command(Command::SendEnergyRequest { ipaddr: &ipv6_addr }) {
+                error!("failed to send command: {:?}", e);
+                counter_error_sksendto.inc();
+                break 'main;
+            }
             counter_request_energy.inc();
     
 
             // wait response for energy request
             'wait_response: loop {
-                let r = receiver.recv()?;
+                let r = match receiver.recv() {
+                    Ok(r) => r,
+                    Err(e) => {
+                        error!("reader thread closed when they encouter error: {:?}", e);
+                        break 'main;
+                    }
+                };
                 info!("{:?}", r);
     
                 match r {
