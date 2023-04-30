@@ -19,7 +19,7 @@ use parser::{parser, PanDesc, IpAddr};
 mod command;
 use command::Command;
 
-use crate::parser::Response;
+use crate::parser::{Response, EchonetLite, EData, EDataType1, EOJ_LOW_VOLTAGE_SMART_METER, EDataProperty, EpcLowVoltageSmartMeter};
 
 
 #[derive(Debug, Clone)]
@@ -185,8 +185,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     let exporter = prometheus_exporter::start(addr).expect("can not start exporter");
     let duration = std::time::Duration::from_millis(10000);
 
-    let my_metrics = register_gauge!("my_metrics", "my metrics")
-        .expect("can not create gauge my_metrics");
+    let counter_error_initialize = register_gauge!("counter_error_initialize", "# of error when try to initialize sensor with PANA")
+        .expect("can not create gauge counter_error_initialize");
+    let counter_error_sksendto = register_gauge!("counter_error_sksendto", "# of error when sending data to sensor")
+        .expect("can not create gauge counter_error_sksendto");
+    let counter_success_initialize = register_gauge!("counter_success_initialize", "# of times client finished initialization")
+        .expect("can not create gauge counter_success_initialize");
+    let counter_request_energy = register_gauge!("counter_request_energy", "# of times client send energy request")
+        .expect("can not create gauge counter_request_energy");
+    let instantaneous_energy = register_gauge!("instantaneous_energy", "Current Power Consumption in Watt")
+        .expect("can not create gauge instantaneous_energy");
 
 
     let mut uart = Uart::with_path("/dev/ttyAMA0", 115200, Parity::None, 8, 1)?;
@@ -242,51 +250,64 @@ fn main() -> Result<(), Box<dyn Error>> {
             Err(e) => {
                 error!("unable to initialize smartmeter: {:?}", e);
                 std::thread::sleep(Duration::from_secs(30));
+                counter_error_initialize.inc();
                 continue;
             }
         };
+        counter_success_initialize.inc();
 
         // main loop
-        loop {
+        'main: loop {
+            let _guard = exporter.wait_duration(duration);
             uart.send_command(Command::SendEnergyRequest { ipaddr: &ipv6_addr })?;
+            counter_request_energy.inc();
     
 
             // wait response for energy request
-            loop {
+            'wait_response: loop {
                 let r = receiver.recv()?;
                 info!("{:?}", r);
     
                 match r {
                     Response::SkSendTo{ result: 0x00, .. } => {
                         debug!("send energy request success");
-                        break;
                     },
                     Response::SkSendTo{ result: _, .. } => {
                         warn!("failed to send energy request: {:?}", r);
-                        break;
+                        counter_error_sksendto.inc();
+                        break 'wait_response;
+                    },
+                    Response::ERxUdp {
+                        data: EchonetLite {
+                            edata: EData::EDataType1(EDataType1 {
+                                seoj: EOJ_LOW_VOLTAGE_SMART_METER,
+                                props,
+                                ..
+                        }), .. }, ..
+                    } => {
+                        for prop in props {
+                            match prop {
+                                EDataProperty {
+                                    epc: EpcLowVoltageSmartMeter::INSTANTANEOUS_CURRENT,
+                                    pdc: 0x04,
+                                    mut edt,
+                                    ..
+                                } => {
+                                    let power = edt.get_u32();
+                                    instantaneous_energy.set(power as f64);
+                                },
+                                _ => {
+                                    // ignore
+                                }
+                            }
+                        }
+                        break 'wait_response;
                     },
                     _ => {
+                        // ignore
                     }
                 }
             }
-            std::thread::sleep(Duration::from_secs(15));
         }
     }
-
-
-
-
-    // loop {
-    //     // Will block until duration is elapsed.
-    //     let _guard = exporter.wait_duration(duration);
-
-    //     info!("Updating metrics");
-
-    //     let new_value = my_metrics.get() + 1.0;
-    //     info!("New random value: {}", new_value);
-
-    //     my_metrics.set(new_value);
-    // }
-
-    // Ok(())
 }

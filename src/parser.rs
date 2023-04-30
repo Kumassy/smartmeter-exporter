@@ -67,50 +67,70 @@ pub enum Response {
 
 #[derive(Debug, PartialEq)]
 pub struct EchonetLite {
-    ehd: EHd,
-    edata: EData,
+    pub ehd: EHd,
+    pub edata: EData,
 }
 
 #[derive(PartialEq, Default, Clone, Copy)]
-struct EHd {
-    ehd1: u8,
-    ehd2: u8,
-    tid: u16,
+pub struct EHd {
+    pub ehd1: u8,
+    pub ehd2: u8,
+    pub tid: u16,
 }
 
 #[derive(PartialEq, Default, Clone)]
-struct EDataProperty {
-    epc: u8,
-    pdc: u8,
-    edt: Bytes,
+pub struct EDataProperty {
+    pub epc: u8,
+    pub pdc: u8,
+    pub edt: Bytes,
 }
 
-#[derive(PartialEq, Default, Clone, Copy)]
-struct Eoj {
-    class_group_code: u8,
-    class_code: u8,
-    instance_code: u8,
+#[derive(PartialEq, Eq, Default, Clone, Copy)]
+pub struct Eoj {
+    pub class_group_code: u8,
+    pub class_code: u8,
+    pub instance_code: u8,
 }
 
+pub const EOJ_LOW_VOLTAGE_SMART_METER: Eoj = Eoj {
+    class_group_code: 0x02,
+    class_code: 0x88,
+    instance_code: 0x01,
+};
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+#[non_exhaustive]
+pub struct EpcLowVoltageSmartMeter;
+impl EpcLowVoltageSmartMeter {
+    pub const STATUS: u8 = 0x80;
+    pub const EFFECTIVE_DIGITS_OF_CUMULATIVE_ENERGY: u8 = 0xD7;
+    pub const CUMULATIVE_ENERGY_NORMAL_DIRECTION: u8 = 0xE0;
+    pub const CUMULATIVE_ENERGY_REVERSE_DIRECTION: u8 = 0xE3;
+    pub const CUMULATIVE_ENERGY_UNIT: u8 = 0xE1;
+    pub const INSTANTANEOUS_ENERGY: u8 = 0xE7;
+    pub const INSTANTANEOUS_CURRENT: u8 = 0xE8;
+    pub const CUMULATIVE_ENERGY_FIXED_TIME_NORMAL_DIRECTION: u8 = 0xEA;
+    pub const CUMULATIVE_ENERGY_FIXED_TIME_REVERSE_DIRECTION: u8 = 0xEB;
+}
 
 #[derive(Debug, PartialEq, Clone)]
-enum EData {
+pub enum EData {
     EDataType1(EDataType1),
     InvalidEData(Bytes),
 }
 
 #[derive(PartialEq, Default, Clone)]
-struct EDataType1 {
-    seoj: Eoj, 
-    deoj: Eoj, 
-    esv: u8,
-    opc: u8,
-    props: Vec<EDataProperty>,
+pub struct EDataType1 {
+    pub seoj: Eoj, 
+    pub deoj: Eoj, 
+    pub esv: u8,
+    pub opc: u8,
+    pub props: Vec<EDataProperty>,
 }
 
 #[derive(Debug, PartialEq, Default, Clone)]
 struct EDataType2 {
-    data: Bytes,
+    pub data: Bytes,
 }
 
 #[derive(PartialEq, Default, Clone)]
