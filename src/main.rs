@@ -1,5 +1,5 @@
 use bytes::{BytesMut, BufMut, Bytes, Buf};
-use log::{info, debug, error};
+use log::{info, debug, error, warn};
 use std::io::{self, BufReader, BufRead};
 use std::sync::{Arc, Mutex};
 use std::{net::SocketAddr, io::Read, io::Write};
@@ -15,7 +15,7 @@ use prometheus_exporter::prometheus::register_gauge;
 use rppal::uart::{Parity, Uart, Queue};
 
 mod parser;
-use parser::{parser, PanDesc};
+use parser::{parser, PanDesc, IpAddr};
 mod command;
 use command::Command;
 
@@ -71,7 +71,7 @@ fn active_scan(sensor: &mut MyUart, receiver: &mut Receiver<Response>) -> Result
         return Err("SKSCAN failed".into());
     }
 
-    let mut tmp = Err("unable to scan".into());
+    let mut tmp = Err("unable to find sensor within duration".into());
     loop {
         let r = receiver.recv()?;
         match r {
@@ -114,6 +114,68 @@ const B_ID: &str = std::env!("B_ID");
 const B_PW: &str = std::env!("B_PW");
 
 
+fn initialize(uart: &mut MyUart, receiver: &mut Receiver<Response>) -> Result<IpAddr, Box<dyn Error>>  {
+    // reset
+    uart.send_command(Command::SkReset)?;
+    let r = receiver.recv()?;
+    if ! matches!(r, Response::SkReset) {
+        return Err("SKRESET failed".into());
+    }
+
+    // send id
+    uart.send_command(Command::SkSetRbid { id: B_ID })?;
+    let r = receiver.recv()?;
+
+    if ! matches!(r, Response::SkSetRbid { ..}) {
+        return Err("SKSETRBID failed".into());
+    }
+
+    // send pw
+    uart.send_command(Command::SkSetPwd { pwd: B_PW })?;
+    let r = receiver.recv()?;
+    if ! matches!(r, Response::SkSetPwd { ..} ) {
+        return Err("SKSETPWD failed".into());
+    }
+
+    let pan_desc = active_scan(uart, receiver)?;
+    debug!("pan_desc: {:?}", pan_desc);
+
+    // set channel
+    uart.send_command(Command::SkSreg { sreg: 0x02, val: pan_desc.channel as u32 })?;
+    let r = receiver.recv()?;
+    if ! matches!(r, Response::SkSreg { ..} ) {
+        return Err("SKSREG failed".into());
+    }
+
+    // set pan id
+    uart.send_command(Command::SkSreg { sreg: 0x03, val: pan_desc.pan_id as u32 })?;
+    let r = receiver.recv()?;
+    if ! matches!(r, Response::SkSreg { ..} ) {
+        return Err("SKSREG failed".into());
+    }
+
+    // convert addr
+    uart.send_command(Command::SkLl64 { addr64: &pan_desc.addr })?;
+    let r = receiver.recv()?;
+    let ipv6_addr = match r {
+        Response::SkLl64 { ipaddr, .. } => ipaddr,
+        _ => {
+            return Err("SKLL64 failed".into());
+        }
+    };
+
+    // connect to pana
+    uart.send_command(Command::SkJoin { ipaddr: &ipv6_addr })?;
+    let r = receiver.recv()?;
+    if ! matches!(r, Response::SkJoin { ..} ) {
+        return Err("SKJOIN failed".into());
+    }
+
+    wait_for_connect(uart, receiver)?;
+    info!("connected to PANA");
+    Ok(ipv6_addr)
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     Builder::from_env(Env::default().default_filter_or("debug")).init();
 
@@ -149,6 +211,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 },
                 Err(e) => {
                     error!("uart read error: {:?}", e);
+                    break;
                 }
                 _ => {}
             }
@@ -167,89 +230,51 @@ fn main() -> Result<(), Box<dyn Error>> {
                 },
                 Err(e) => {
                     error!("parse error: {:?}", e);
+                    // TODO redo reset
                 }
             }
         }
     });
 
-    // reset
-    uart.send_command(Command::SkReset)?;
-    let r = receiver.recv()?;
-    if ! matches!(r, Response::SkReset) {
-        error!("SKRESET failed");
-    }
-
-    // send id
-    uart.send_command(Command::SkSetRbid { id: B_ID })?;
-    let r = receiver.recv()?;
-
-    if ! matches!(r, Response::SkSetRbid { ..}) {
-        error!("SKSETRBID failed");
-    }
-
-    // send pw
-    uart.send_command(Command::SkSetPwd { pwd: B_PW })?;
-    let r = receiver.recv()?;
-    if ! matches!(r, Response::SkSetPwd { ..} ) {
-        error!("SKSETPWD failed");
-    }
-
-    let pan_desc = active_scan(&mut uart, &mut receiver)?;
-    println!("pan_desc: {:?}", pan_desc);
-
-    // set channel
-    uart.send_command(Command::SkSreg { sreg: 0x02, val: pan_desc.channel as u32 })?;
-    let r = receiver.recv()?;
-    if ! matches!(r, Response::SkSreg { ..} ) {
-        error!("SKSREG failed");
-    }
-
-    // set pan id
-    uart.send_command(Command::SkSreg { sreg: 0x03, val: pan_desc.pan_id as u32 })?;
-    let r = receiver.recv()?;
-    if ! matches!(r, Response::SkSreg { ..} ) {
-        error!("SKSREG failed");
-    }
-
-    // convert addr
-    uart.send_command(Command::SkLl64 { addr64: &pan_desc.addr })?;
-    let r = receiver.recv()?;
-    let ipv6_addr = match r {
-        Response::SkLl64 { ipaddr, .. } => ipaddr,
-        _ => {
-            error!("SKLL64 failed");
-            return Err("SKLL64 failed".into());
-        }
-    };
-
-    // connect to pana
-    uart.send_command(Command::SkJoin { ipaddr: &ipv6_addr })?;
-    let r = receiver.recv()?;
-    if ! matches!(r, Response::SkJoin { ..} ) {
-        error!("SKJOIN failed");
-    }
-
-    wait_for_connect(&mut uart, &mut receiver)?;
-    info!("connected to PANA");
-
     loop {
-        // send
-        uart.send_command(Command::SendEnergyRequest { ipaddr: &ipv6_addr })?;
+        let ipv6_addr = match initialize(&mut uart, &mut receiver) {
+            Ok(ipv6_addr) => ipv6_addr,
+            Err(e) => {
+                error!("unable to initialize smartmeter: {:?}", e);
+                std::thread::sleep(Duration::from_secs(30));
+                continue;
+            }
+        };
 
+        // main loop
         loop {
-            let r = receiver.recv()?;
-            info!("{:?}", r);
+            uart.send_command(Command::SendEnergyRequest { ipaddr: &ipv6_addr })?;
+    
 
-            match r {
-                Response::SkSendTo{ result: 0x00, .. } => {
-                    break;
-                },
-                _ => {
+            // wait response for energy request
+            loop {
+                let r = receiver.recv()?;
+                info!("{:?}", r);
+    
+                match r {
+                    Response::SkSendTo{ result: 0x00, .. } => {
+                        debug!("send energy request success");
+                        break;
+                    },
+                    Response::SkSendTo{ result: _, .. } => {
+                        warn!("failed to send energy request: {:?}", r);
+                        break;
+                    },
+                    _ => {
+                    }
                 }
             }
+            std::thread::sleep(Duration::from_secs(15));
         }
-        std::thread::sleep(Duration::from_secs(15));
     }
+
+
+
 
     // loop {
     //     // Will block until duration is elapsed.
