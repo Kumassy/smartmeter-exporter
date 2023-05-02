@@ -2,6 +2,7 @@ use bytes::{Bytes, BytesMut, BufMut};
 
 pub type Addr64 = str;
 pub type IpAddr = str;
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command<'a> {
     SkReset,
     SkSetRbid{
