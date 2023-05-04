@@ -353,7 +353,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         for prop in props {
                             match prop {
                                 EDataProperty {
-                                    epc: EpcLowVoltageSmartMeter::INSTANTANEOUS_CURRENT,
+                                    epc: EpcLowVoltageSmartMeter::INSTANTANEOUS_ENERGY,
                                     pdc: 0x04,
                                     mut edt,
                                     ..
