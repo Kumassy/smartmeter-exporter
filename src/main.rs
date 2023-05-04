@@ -24,13 +24,13 @@ use command::Command;
 use crate::parser::{Response, EchonetLite, EData, EDataType1, EOJ_LOW_VOLTAGE_SMART_METER, EDataProperty, EpcLowVoltageSmartMeter};
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct UartReader {
     inner: Arc<Mutex<Uart>>,
     is_closed: Arc<AtomicBool>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct UartWriter {
     inner: Arc<Mutex<Uart>>,
     is_closed: Arc<AtomicBool>,
