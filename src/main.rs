@@ -23,7 +23,7 @@ use command::Command;
 mod echonet_lite;
 
 use crate::parser::{Response};
-use crate::echonet_lite::{EchonetLite, EData, EDataFormat1, EOJ_LOW_VOLTAGE_SMART_METER, EDataProperty, EpcLowVoltageSmartMeter};
+use crate::echonet_lite::{EchonetLite, EData, EDataFormat1, EOJ_HOUSING_LOW_VOLTAGE_SMART_METER, EDataProperty, EpcLowVoltageSmartMeter};
 
 
 #[derive(Debug)]
@@ -345,7 +345,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     Response::ERxUdp {
                         data: EchonetLite {
                             edata: EData::EDataFormat1(EDataFormat1 {
-                                seoj: EOJ_LOW_VOLTAGE_SMART_METER,
+                                seoj: EOJ_HOUSING_LOW_VOLTAGE_SMART_METER,
                                 props,
                                 ..
                         }), .. }, ..

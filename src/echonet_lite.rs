@@ -32,9 +32,14 @@ pub struct Eoj {
     pub instance_code: u8,
 }
 
-pub const EOJ_LOW_VOLTAGE_SMART_METER: Eoj = Eoj {
+pub const EOJ_HOUSING_LOW_VOLTAGE_SMART_METER: Eoj = Eoj {
     class_group_code: 0x02,
     class_code: 0x88,
+    instance_code: 0x01,
+};
+pub const EOJ_MANAGEMENT_CONTROLLER: Eoj = Eoj {
+    class_group_code: 0x05,
+    class_code: 0xFF,
     instance_code: 0x01,
 };
 
@@ -68,9 +73,15 @@ pub struct EDataFormat1 {
     pub props: Vec<EDataProperty>,
 }
 
-#[derive(Debug, PartialEq, Default, Clone)]
-struct EDataType2 {
-    pub data: Bytes,
+#[derive(Debug, PartialEq, Clone, Copy)]
+#[non_exhaustive]
+pub struct Esv;
+impl Esv {
+    pub const PROP_WRITE_NO_RES: u8 = 0x60;
+    pub const PROP_WRITE: u8 = 0x61;
+    pub const PROP_READ: u8 = 0x62;
+    pub const PROP_NOTIFY: u8 = 0x62;
+    pub const PROP_WRITE_READ: u8 = 0x6E;
 }
 
 impl fmt::Debug for EHd {
@@ -113,4 +124,100 @@ impl fmt::Debug for EDataFormat1 {
          .field("props", &self.props)
          .finish()
     }
+}
+
+
+impl Into<Bytes> for EHd {
+    fn into(self) -> Bytes {
+        let mut bytes = BytesMut::new();
+        bytes.put_u8(self.ehd1);
+        bytes.put_u8(self.ehd2);
+        bytes.put_u16(self.tid);
+        bytes.freeze()
+    }
+}
+
+impl Into<Bytes> for EDataProperty {
+    fn into(self) -> Bytes {
+        let mut bytes = BytesMut::new();
+        bytes.put_u8(self.epc);
+        bytes.put_u8(self.pdc);
+        bytes.put(self.edt);
+        bytes.freeze()
+    }
+}
+
+impl Into<Bytes> for Eoj {
+    fn into(self) -> Bytes {
+        let mut bytes = BytesMut::new();
+        bytes.put_u8(self.class_group_code);
+        bytes.put_u8(self.class_code);
+        bytes.put_u8(self.instance_code);
+        bytes.freeze()
+    }
+}
+
+impl Into<Bytes> for EDataFormat1 {
+    fn into(self) -> Bytes {
+        let mut bytes = BytesMut::new();
+
+        bytes.put::<Bytes>(self.seoj.into());
+        bytes.put::<Bytes>(self.deoj.into());
+        bytes.put_u8(self.esv);
+        bytes.put_u8(self.opc);
+        for prop in self.props {
+            bytes.put::<Bytes>(prop.into());
+        }
+        bytes.freeze()
+    }
+}
+
+impl Into<Bytes> for EData {
+    fn into(self) -> Bytes {
+        match self {
+            EData::EDataFormat1(data) => data.into(),
+            EData::InvalidEData(data) => data,
+        }
+    }
+}
+
+impl Into<Bytes> for EchonetLite {
+    fn into(self) -> Bytes {
+        let mut bytes = BytesMut::new();
+        bytes.put::<Bytes>(self.ehd.into());
+        bytes.put::<Bytes>(self.edata.into());
+        bytes.freeze()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_echonet_lite_as_bytes() {
+        let data = EchonetLite {
+            ehd: EHd {
+                ehd1: EHD1_ECHONET_LITE,
+                ehd2: EHD2_FORMAT1,
+                tid: 0x0001,
+            },
+            edata: EData::EDataFormat1(EDataFormat1 {
+                seoj: EOJ_MANAGEMENT_CONTROLLER,
+                deoj: EOJ_HOUSING_LOW_VOLTAGE_SMART_METER,
+                esv: Esv::PROP_READ,
+                opc: 0x01,
+                props: vec![EDataProperty {
+                    epc: EpcLowVoltageSmartMeter::INSTANTANEOUS_ENERGY,
+                    pdc: 0x00,
+                    edt: Bytes::new(),
+                }],
+            })
+        };
+        
+        let bytes: Bytes = data.into();
+
+        assert_eq!(bytes, Bytes::from_static(b"\x10\x81\x00\x01\x05\xFF\x01\x02\x88\x01\x62\x01\xE7\x00"));
+    }
+
 }

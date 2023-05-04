@@ -1,5 +1,7 @@
 use bytes::{Bytes, BytesMut, BufMut};
 
+use crate::echonet_lite::{EchonetLite, EHd, EHD1_ECHONET_LITE, EHD2_FORMAT1, EData, EDataFormat1, EOJ_MANAGEMENT_CONTROLLER, EOJ_HOUSING_LOW_VOLTAGE_SMART_METER, Esv, EDataProperty, EpcLowVoltageSmartMeter};
+
 pub type Addr64 = str;
 pub type IpAddr = str;
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,7 +85,25 @@ impl Into<Bytes> for Command<'_> {
             },
             Command::SendEnergyRequest { ipaddr } => {
                 // get current power consumption
-                let get_now_p = Bytes::from(&b"\x10\x81\x00\x01\x05\xFF\x01\x02\x88\x01\x62\x01\xE7\x00"[..]);
+                let get_now_p = EchonetLite {
+                    ehd: EHd {
+                        ehd1: EHD1_ECHONET_LITE,
+                        ehd2: EHD2_FORMAT1,
+                        tid: 0x0001,
+                    },
+                    edata: EData::EDataFormat1(EDataFormat1 {
+                        seoj: EOJ_MANAGEMENT_CONTROLLER,
+                        deoj: EOJ_HOUSING_LOW_VOLTAGE_SMART_METER,
+                        esv: Esv::PROP_READ,
+                        opc: 0x01,
+                        props: vec![EDataProperty {
+                            epc: EpcLowVoltageSmartMeter::INSTANTANEOUS_ENERGY,
+                            pdc: 0x00,
+                            edt: Bytes::new(),
+                        }],
+                    })
+                };
+                let get_now_p: Bytes = get_now_p.into();
 
                 let mut cmd = BytesMut::from(format!("SKSENDTO 1 {} 0E1A 1 {:>04X} ", ipaddr, get_now_p.len()).as_bytes());
                 cmd.put(get_now_p);
