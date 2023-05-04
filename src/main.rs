@@ -20,8 +20,10 @@ mod parser;
 use parser::{parser, PanDesc, IpAddr};
 mod command;
 use command::Command;
+mod echonet_lite;
 
-use crate::parser::{Response, EchonetLite, EData, EDataType1, EOJ_LOW_VOLTAGE_SMART_METER, EDataProperty, EpcLowVoltageSmartMeter};
+use crate::parser::{Response};
+use crate::echonet_lite::{EchonetLite, EData, EDataFormat1, EOJ_LOW_VOLTAGE_SMART_METER, EDataProperty, EpcLowVoltageSmartMeter};
 
 
 #[derive(Debug)]
@@ -342,7 +344,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     },
                     Response::ERxUdp {
                         data: EchonetLite {
-                            edata: EData::EDataType1(EDataType1 {
+                            edata: EData::EDataFormat1(EDataFormat1 {
                                 seoj: EOJ_LOW_VOLTAGE_SMART_METER,
                                 props,
                                 ..

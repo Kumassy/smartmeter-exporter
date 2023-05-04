@@ -5,6 +5,7 @@ use std::fmt;
 use bytes::Bytes;
 use nom::{IResult, bytes::streaming::{tag, take_while1, take, take_while_m_n }, branch::alt, character::{streaming::{space1, hex_digit1, crlf}, is_alphanumeric, is_hex_digit}, sequence::{tuple, delimited, preceded}, combinator::{map_res, map, opt, all_consuming, recognize}, ToUsize, number::streaming::{be_u8, be_u16}, multi::count };
 
+use crate::echonet_lite::{EchonetLite, EData, EDataFormat1, Eoj, EDataProperty, EHd};
 
 pub type Addr64 = String;
 pub type IpAddr = String;
@@ -65,74 +66,6 @@ pub enum Response {
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub struct EchonetLite {
-    pub ehd: EHd,
-    pub edata: EData,
-}
-
-#[derive(PartialEq, Default, Clone, Copy)]
-pub struct EHd {
-    pub ehd1: u8,
-    pub ehd2: u8,
-    pub tid: u16,
-}
-
-#[derive(PartialEq, Default, Clone)]
-pub struct EDataProperty {
-    pub epc: u8,
-    pub pdc: u8,
-    pub edt: Bytes,
-}
-
-#[derive(PartialEq, Eq, Default, Clone, Copy)]
-pub struct Eoj {
-    pub class_group_code: u8,
-    pub class_code: u8,
-    pub instance_code: u8,
-}
-
-pub const EOJ_LOW_VOLTAGE_SMART_METER: Eoj = Eoj {
-    class_group_code: 0x02,
-    class_code: 0x88,
-    instance_code: 0x01,
-};
-
-#[derive(Debug, PartialEq, Clone, Copy)]
-#[non_exhaustive]
-pub struct EpcLowVoltageSmartMeter;
-impl EpcLowVoltageSmartMeter {
-    pub const STATUS: u8 = 0x80;
-    pub const EFFECTIVE_DIGITS_OF_CUMULATIVE_ENERGY: u8 = 0xD7;
-    pub const CUMULATIVE_ENERGY_NORMAL_DIRECTION: u8 = 0xE0;
-    pub const CUMULATIVE_ENERGY_REVERSE_DIRECTION: u8 = 0xE3;
-    pub const CUMULATIVE_ENERGY_UNIT: u8 = 0xE1;
-    pub const INSTANTANEOUS_ENERGY: u8 = 0xE7;
-    pub const INSTANTANEOUS_CURRENT: u8 = 0xE8;
-    pub const CUMULATIVE_ENERGY_FIXED_TIME_NORMAL_DIRECTION: u8 = 0xEA;
-    pub const CUMULATIVE_ENERGY_FIXED_TIME_REVERSE_DIRECTION: u8 = 0xEB;
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub enum EData {
-    EDataType1(EDataType1),
-    InvalidEData(Bytes),
-}
-
-#[derive(PartialEq, Default, Clone)]
-pub struct EDataType1 {
-    pub seoj: Eoj, 
-    pub deoj: Eoj, 
-    pub esv: u8,
-    pub opc: u8,
-    pub props: Vec<EDataProperty>,
-}
-
-#[derive(Debug, PartialEq, Default, Clone)]
-struct EDataType2 {
-    pub data: Bytes,
-}
-
 #[derive(PartialEq, Default, Clone)]
 pub struct PanDesc {
     pub channel: u8,
@@ -143,47 +76,6 @@ pub struct PanDesc {
     pub pair_id: String, // char[8]
 }
 
-impl fmt::Debug for EHd {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("EHd")
-         .field("ehd1", &format_args!("{:#x}", self.ehd1))
-         .field("ehd2", &format_args!("{:#x}", self.ehd2))
-         .field("tid", &format_args!("{:#x}", self.tid))
-         .finish()
-    }
-}
-
-impl fmt::Debug for Eoj {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Eoj")
-         .field("class_group_code", &format_args!("{:#x}", self.class_group_code))
-         .field("class_code", &format_args!("{:#x}", self.class_code))
-         .field("instance_code", &format_args!("{:#x}", self.instance_code))
-         .finish()
-    }
-}
-
-impl fmt::Debug for EDataProperty {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("EDataProperty")
-         .field("epc", &format_args!("{:#x}", self.epc))
-         .field("pdc", &format_args!("{:#x}", self.pdc))
-         .field("edt", &self.edt)
-         .finish()
-    }
-}
-
-impl fmt::Debug for EDataType1 {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("EDataType1")
-         .field("seoj", &self.seoj)
-         .field("deoj", &self.deoj)
-         .field("esv", &format_args!("{:#x}", self.esv))
-         .field("opc", &format_args!("{:#x}", self.opc))
-         .field("props", &self.props)
-         .finish()
-    }
-}
 
 impl fmt::Debug for PanDesc {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -650,7 +542,7 @@ fn parse_edata(input: &[u8]) -> IResult<&[u8], EData> {
 
     let (input, props) = count(parse_edata_property, opc as usize)(input)?;
 
-    Ok((input, EData::EDataType1(EDataType1 {
+    Ok((input, EData::EDataFormat1(EDataFormat1 {
         seoj,
         deoj,
         esv,
@@ -923,7 +815,7 @@ mod tests {
     fn test_parse_edata() {
         let (rest, edata) = parse_edata(&b"\x05\xff\x01\x02\x88\x01b\x01\xe7\x00"[..]).unwrap();
         assert_eq!(rest, &b""[..]);
-        assert_eq!(edata, EData::EDataType1(EDataType1{
+        assert_eq!(edata, EData::EDataFormat1(EDataFormat1{
             seoj: Eoj {
                 class_group_code: 0x05,
                 class_code: 0xff,
@@ -963,7 +855,7 @@ mod tests {
                     ehd2: 0x81,
                     tid: 0x0001,
                 },
-                edata: EData::EDataType1(EDataType1 {
+                edata: EData::EDataFormat1(EDataFormat1 {
                     seoj: Eoj {
                         class_group_code: 0x02,
                         class_code: 0x88,
