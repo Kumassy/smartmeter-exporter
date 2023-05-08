@@ -1,0 +1,11 @@
+[Unit]
+Description=Smartmeter Exporter
+
+[Service]
+ExecStart=/home/pi/smartmeter-exporter/smartmeter-exporter
+Environment="RUST_LOG_DESTINATION=file"
+Environment="RUST_LOG=info"
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
