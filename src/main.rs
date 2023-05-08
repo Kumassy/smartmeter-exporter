@@ -1,5 +1,6 @@
 use bytes::{BytesMut, BufMut, Bytes, Buf};
 use log::{info, debug, error, warn};
+use std::fs::OpenOptions;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -11,7 +12,7 @@ use std::sync::mpsc::{channel, Receiver};
 
 use env_logger::{
     Builder,
-    Env,
+    Env, Target,
 };
 use prometheus_exporter::prometheus::register_gauge;
 use rppal::uart::{Parity, Uart, Queue};
@@ -206,6 +207,12 @@ fn send_initialize_command_sequence(writer: &mut UartWriter, receiver: &mut Rece
     Ok(ipv6_addr)
 }
 
+
+// # cancellation
+// It is caller responsibility to ensure that the previous reader thread closes before calling initialize again.
+// By dropping thre writer, reader.read() will get error and then the reader thread closes.
+// Note that reader.read() yield something no later than reader timeout set by uart.set_read_mode().
+// So, if you drop the writer, you can successfully join the reader thread within the timeout.
 fn initialize() -> Result<(UartWriter, Receiver<Response>, IpAddr, JoinHandle<()>), Box<dyn Error>>  {
     let mut uart = Uart::with_path("/dev/ttyAMA0", 115200, Parity::None, 8, 1)?;
 
@@ -216,11 +223,6 @@ fn initialize() -> Result<(UartWriter, Receiver<Response>, IpAddr, JoinHandle<()
     let (sender, mut receiver) = channel();
     let (mut reader, mut writer) = split_uart(uart);
 
-    // # cancellation
-    // it is caller responsibility to ensure that the previous reader thread closes before calling initialize again
-    // by dropping thre writer, reader.read() will get error and then the reader thread closes.
-    // note that reader.read() yield something no later than reader timeout set by uart.set_read_mode()
-    // so, if you drop the writer, you can successfully join the reader thread within the timeout.
     let handle = std::thread::spawn(move || {
         let mut buf = BytesMut::with_capacity(1024);
         loop {
@@ -279,7 +281,20 @@ const B_ID: &str = std::env!("B_ID");
 const B_PW: &str = std::env!("B_PW");
 
 fn main() -> Result<(), Box<dyn Error>> {
-    Builder::from_env(Env::default().default_filter_or("debug")).init();
+    let env = Env::default()
+        .default_filter_or("debug");
+    let mut builder = Builder::from_env(env);
+
+    if let Ok(dest) = std::env::var("RUST_LOG_DESTINATION") {
+        if dest == "file" {
+            let file = OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open("/var/log/smartmeter-exporter/smartmeter-exporter.log")?;
+            builder.target(Target::Pipe(Box::new(file)));
+        }
+    }
+    builder.init();
 
     let addr_raw = "0.0.0.0:9186";
     let addr: SocketAddr = addr_raw.parse().expect("can not parse listen addr");
