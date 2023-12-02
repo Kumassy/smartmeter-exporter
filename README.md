@@ -197,8 +197,8 @@ Restart=always
 WantedBy=multi-user.target
 
 pi@raspberrypi:~/smartmeter-exporter $ sudo mkdir /var/log/smartmeter-exporter
-pi@raspberrypi:~/smartmeter-exporter $ sudo mchmod g+w /var/log/smartmeter-exporter
-pi@raspberrypi:~/smartmeter-exporter $ sudo mchmod g+s /var/log/smartmeter-exporter
+pi@raspberrypi:~/smartmeter-exporter $ sudo chmod g+w /var/log/smartmeter-exporter
+pi@raspberrypi:~/smartmeter-exporter $ sudo chmod g+s /var/log/smartmeter-exporter
 pi@raspberrypi:~/smartmeter-exporter $ cat /etc/logrotate.d/smartmeter-exporter
 /var/log/smartmeter-exporter/smartmeter-exporter.log {
     su root adm
